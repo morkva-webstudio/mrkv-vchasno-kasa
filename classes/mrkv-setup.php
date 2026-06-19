@@ -308,6 +308,11 @@ if (!class_exists('MRKV_SETUP')){
 	            $receipt_url = get_post_meta($the_order->get_id(), 'vchasno_kasa_receipt_url', true);
 	            $receipt_id = get_post_meta($the_order->get_id(), 'vchasno_kasa_receipt_id', true);
 
+				if(!$receipt_url || !$receipt_id){
+					$receipt_url = $the_order->get_meta('vchasno_kasa_receipt_url');
+					$receipt_id  = $the_order->get_meta('vchasno_kasa_receipt_id');
+				}
+
 	            # Check if exist
 	            if($receipt_url && $receipt_id){
 	            	# Print link to Vchasno Kasa Receipt 
@@ -330,6 +335,11 @@ if (!class_exists('MRKV_SETUP')){
 	        	# Get Recaipt ID
 	            $receipt_url = get_post_meta($the_order->get_id(), 'vchasno_kasa_receipt_url', true);
 	            $receipt_id = get_post_meta($the_order->get_id(), 'vchasno_kasa_receipt_id', true);
+
+				if(!$receipt_url || !$receipt_id){
+					$receipt_url = $the_order->get_meta('vchasno_kasa_receipt_url');
+					$receipt_id  = $the_order->get_meta('vchasno_kasa_receipt_id');
+				}
 
 	            # Check if exist
 	            if($receipt_url && $receipt_id){
@@ -459,11 +469,15 @@ if (!class_exists('MRKV_SETUP')){
 	        {
 	        	# Create order id variable
 	        	$order_id = $post->ID;
-
-	            # Get receipt url
 		        $receipt_url = get_post_meta($order_id, 'vchasno_kasa_receipt_url', true);
-		        # Get receipt id
 	            $receipt_id = get_post_meta($order_id, 'vchasno_kasa_receipt_id', true);
+	            $order = wc_get_order( $order_id );
+
+				if($order)
+				{
+					$receipt_url = $order->get_meta('vchasno_kasa_receipt_url');
+					$receipt_id  = $order->get_meta('vchasno_kasa_receipt_id');	
+				}
 
 	            # Check receipt id
 	            if($receipt_id)

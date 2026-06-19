@@ -140,7 +140,7 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 		 * */
 		private function check_receipt_exist(){
 			# Check field exist
-			if (! empty(get_post_meta($this->order->get_id(), 'vchasno_kasa_receipt_id', true))) {
+			if (! empty(get_post_meta($this->order->get_meta('vchasno_kasa_receipt_id')))) {
 				# Return postive answer
 				return true;
 			}
@@ -331,15 +331,17 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
         			continue;
         		}
 
-        		$tax_group = intval(get_option('mrkv_kasa_tax_group', 1));
+        		$global_tax = get_option('mrkv_kasa_tax_group', 1);
+				$tax_group  = ( ! empty( $global_tax ) || $global_tax === '0' ) ? intval( $global_tax ) : 1;
 
-        		$product_obj = $item->get_product();
+				$product_obj = $item->get_product();
+				if ( $product_obj && is_a( $product_obj, 'WC_Product' ) ) {
+					$meta_taxcode = trim( (string) $product_obj->get_meta( 'mrkv_vchasno_ind_taxcode' ) );
 
-	            # Check tax
-	            if($product_obj && is_a($product_obj, 'WC_Product') && $product_obj->get_meta('mrkv_vchasno_ind_taxcode'))
-	            {
-	            	$tax_group = intval($product_obj->get_meta('mrkv_vchasno_ind_taxcode'));
-	            }
+					if ( $meta_taxcode !== '' && is_numeric( $meta_taxcode ) && strpos( $meta_taxcode, 'field_' ) === false ) {
+						$tax_group = intval( $meta_taxcode );
+					}
+				}
 
         		# Save item
         		$goods[] = array(
@@ -399,7 +401,7 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 			$params['fiscal'] = array(
 				'task' => 1,
 				'receipt' => array(
-					'sum' => 'bbb' . number_format($order_total, 2, '.', '') . 'bbb',
+					'sum' => 'bbb' . number_format($total_price, 2, '.', '') . 'bbb',
 					'round' => 'bbb' . number_format((0.00), 2, '.', '') . 'bbb',
 					'disc' => 'bbb' . number_format($discount_order_total, 2, '.', '') . 'bbb',
 					'disc_type' => 0,
@@ -447,11 +449,12 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 			if($result->errortxt == ''){
 				# Save qr link
 				$receipt_url = $result->info->doccode;
-				# Save id in order
-				update_post_meta($this->order->get_id(), 'vchasno_kasa_receipt_id', $receipt_url);
+				$receipt_id = !empty($receipt_url_id) ? $receipt_url_id : $receipt_url;
+				$receipt_full_url = !empty($full_url) ? $full_url : 'https://kasa.vchasno.ua/check-viewer/' . $receipt_url;
 
-				# Save id in order
-				update_post_meta($this->order->get_id(), 'vchasno_kasa_receipt_url', 'https://kasa.vchasno.ua/check-viewer/' . $receipt_url);
+				$this->order->update_meta_data('vchasno_kasa_receipt_id', $receipt_id);
+				$this->order->update_meta_data('vchasno_kasa_receipt_url', $receipt_full_url);
+				$this->order->save();
 
 				# Add message in log 
 				$log->save_log(
