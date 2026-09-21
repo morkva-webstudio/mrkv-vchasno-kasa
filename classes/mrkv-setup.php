@@ -428,6 +428,10 @@ if (!class_exists('MRKV_SETUP')){
 			# Get order data
 			$order = wc_get_order( $order_id );
 
+			if ( ! $order ) {
+				return;
+			}
+
 			# Set type creation
 			$type_creation = 'auto';
 
@@ -516,6 +520,11 @@ if (!class_exists('MRKV_SETUP')){
 					echo '<script>
 					    jQuery(document).ready(function($) {
 					        jQuery(".mrkv_vchasno_create_receipt_btn").click(function(){
+					            var $btn = jQuery(this);
+					            if ($btn.hasClass("disabled")) {
+					                return;
+					            }
+					            $btn.addClass("disabled");
 					            jQuery.ajax({
 					                url: "' . $ajax_url. '",
 					                type: "POST",
@@ -528,6 +537,9 @@ if (!class_exists('MRKV_SETUP')){
 					                    jQuery(".mrkv_vchasno_create_receipt svg").show();
 					                },
 					                success: function(data) {
+					                    location.reload();
+					                },
+					                error: function() {
 					                    location.reload();
 					                }
 					            });
