@@ -52,6 +52,11 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 		const ACTION_TYPE_CHECK = 'notifications/checks';
 
 		/**
+		 * @var integer Seconds after which an order lock is treated as abandoned
+		 * */
+		const LOCK_TTL = 120;
+
+		/**
 		 * Constructor for creator receipt
 		 * @param Order data
 		 * */
@@ -95,6 +100,7 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 		private function get_mrkv_ua_shipping_key()
 		{
 			$m_ua_active_plugins = get_option('m_ua_active_plugins');
+			$key = '';
 
 			if($this->order->get_payment_method() =='cod' && $m_ua_active_plugins && is_array($m_ua_active_plugins) && !empty($m_ua_active_plugins) && defined( 'MRKV_UA_SHIPPING_LIST' ))
 			{
@@ -139,13 +145,77 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 		 * Check if receipt is already created 
 		 * */
 		private function check_receipt_exist(){
-			# Check field exist
-			if (! empty(get_post_meta($this->order->get_meta('vchasno_kasa_receipt_id')))) {
-				# Return postive answer
+			$receipt_id  = $this->order->get_meta('vchasno_kasa_receipt_id');
+			$receipt_url = $this->order->get_meta('vchasno_kasa_receipt_url');
+
+			return ! empty($receipt_id) || ! empty($receipt_url);
+		}
+
+		/**
+		 * Log that the receipt already exists (order note only for manual creation,
+		 * otherwise every later status change would add a note)
+		 * @param object Logger
+		 * */
+		private function report_receipt_exists($log){
+			$message = __('Помилка при створені чека: Чек вже було створено для данного замовлення', 'mrkv-vchasno-kasa');
+
+			$log->save_log($message);
+
+			if($this->type_creation == 'handle'){
+				$this->order->add_order_note($message, $is_customer_note = 0, $added_by_user = false);
+			}
+		}
+
+		/**
+		 * Take the per-order lock, so two requests can not create a receipt for one order at once
+		 * @return boolean True if the lock is ours
+		 * */
+		private function acquire_lock(){
+			$name = 'mrkv_kasa_lock_' . $this->order->get_id();
+
+			# add_option() fails when the row already exists
+			if(add_option($name, time(), '', 'no')){
 				return true;
 			}
-			# Return negative answer
+
+			# Lock left by a request that died before releasing it
+			$locked_at = (int) get_option($name);
+
+			if($locked_at && (time() - $locked_at) > self::LOCK_TTL){
+				delete_option($name);
+
+				return add_option($name, time(), '', 'no');
+			}
+
 			return false;
+		}
+
+		/**
+		 * Release the per-order lock
+		 * */
+		private function release_lock(){
+			delete_option('mrkv_kasa_lock_' . $this->order->get_id());
+		}
+
+		/**
+		 * Load the order again, the object we were given can be older than a receipt saved meanwhile
+		 * */
+		private function refresh_order(){
+			$fresh = wc_get_order($this->order->get_id());
+
+			if($fresh){
+				$this->order = $fresh;
+			}
+		}
+
+		/**
+		 * Manual creation skips the auto rules, but not for orders that must never get a receipt
+		 * @return boolean True if the order status forbids creating a receipt
+		 * */
+		private function is_status_blocked(){
+			$blocked = apply_filters('mrkv_kasa_manual_blocked_statuses', array('cancelled', 'refunded', 'failed', 'trash', 'checkout-draft'));
+
+			return in_array($this->order->get_status(), (array) $blocked, true);
 		}
 
 		/**
@@ -178,9 +248,22 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 
 		/**
 		 * Return payment type for current method
-		 * @return integer Current payment type 
+		 * @return integer|null Current payment type, null if it is not configured for this method
 		 * */
 		private function get_payment_type(){
+			/**
+			 * Lets a site map a payment method missing from the settings (e.g. an old gateway id)
+			 * @param integer|null Payment type from the settings
+			 * @param object Order
+			 * */
+			return apply_filters('mrkv_kasa_payment_type', $this->resolve_payment_type(), $this->order);
+		}
+
+		/**
+		 * Payment type from the plugin settings
+		 * @return integer|null Payment type, null if the settings have none for this method
+		 * */
+		private function resolve_payment_type(){
 			# Get settings payment 
 			$ppo_payment_type = get_option('mrkv_kasa_code_type_payment');
 			$ppo_payment_type_custom = get_option('mrkv_kasa_code_type_payment_custom');
@@ -209,8 +292,8 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 				return $ppo_payment_type[ $this->order->get_payment_method() ];
 			}
 
-			# Return default value
-			return 0;
+			# Not configured, a silent cash type would fiscalize a card payment as cash
+			return null;
 		}
 
 		/**
@@ -224,15 +307,81 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 			if($this->type_creation != 'handle'){
 				# Check order by rules
 				if($this->check_payment_types()){
-					# Show Error
-					/*$log->save_log(__('Помилка при створені чека: Чек не пройшов по правилам формування чеків', 'mrkv-vchasno-kasa'));
-
-					# Show error in order
-					$this->order->add_order_note(__('Помилка при створені чека: Чек не пройшов по правилам формування чеків', 'mrkv-vchasno-kasa'), $is_customer_note = 0, $added_by_user = false);*/
-
 					# Stop create
 					return;
 				}
+			}
+
+			# Check if receipt is already created
+			if($this->check_receipt_exist()){
+				$this->report_receipt_exists($log);
+
+				return;
+			}
+
+			# Another request is creating the receipt for this order right now
+			if(!$this->acquire_lock()){
+				$message = __('Чек для цього замовлення вже створюється. Зачекайте кілька секунд і оновіть сторінку', 'mrkv-vchasno-kasa');
+
+				$log->save_log($message);
+
+				if($this->type_creation == 'handle'){
+					$this->order->add_order_note($message, $is_customer_note = 0, $added_by_user = false);
+				}
+
+				return;
+			}
+
+			try{
+				# The receipt could be saved by the request that held the lock
+				$this->refresh_order();
+
+				if($this->check_receipt_exist()){
+					$this->report_receipt_exists($log);
+
+					return;
+				}
+
+				$this->create_receipt_locked($log);
+			}
+			finally{
+				$this->release_lock();
+			}
+		}
+
+		/**
+		 * Create receipt, the caller holds the order lock
+		 * @param object Logger
+		 * */
+		private function create_receipt_locked($log){
+			# Manual creation skips the rules above, so check the order itself
+			if($this->type_creation == 'handle' && $this->is_status_blocked()){
+				$message = sprintf(
+					/* translators: %s is the order status */
+					__('Помилка при створені чека: Не можна створити чек для замовлення зі статусом "%s"', 'mrkv-vchasno-kasa'),
+					$this->order->get_status()
+				);
+
+				$log->save_log($message);
+				$this->order->add_order_note($message, $is_customer_note = 0, $added_by_user = false);
+
+				return;
+			}
+
+			# Check payment type is configured
+			$payment_type = $this->get_payment_type();
+
+			if($payment_type === null){
+				$message = sprintf(
+					/* translators: %s is the payment method id */
+					__('Помилка при створені чека: Для способу оплати "%s" не налаштовано тип оплати для ПРРО', 'mrkv-vchasno-kasa'),
+					$this->order->get_payment_method()
+				);
+
+				$log->save_log($message);
+				$this->order->add_order_note($message, $is_customer_note = 0, $added_by_user = false);
+
+				return;
 			}
 
 			# Check shift status
@@ -254,18 +403,6 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 
 				# Show error in order
 				$this->order->add_order_note(__('Помилка при створені чека: Порожній токен', 'mrkv-vchasno-kasa'), $is_customer_note = 0, $added_by_user = false);
-
-				# Stop create
-				return;
-			}
-
-			# Check if receipt is already created
-			if($this->check_receipt_exist()){
-				# Show Error
-				$log->save_log(__('Помилка при створені чека: Чек вже було створено для данного замовлення', 'mrkv-vchasno-kasa'));
-
-				# Show error in order
-				$this->order->add_order_note(__('Помилка при створені чека: Чек вже було створено для данного замовлення', 'mrkv-vchasno-kasa'), $is_customer_note = 0, $added_by_user = false);
 
 				# Stop create
 				return;
@@ -410,7 +547,7 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 					'rows' => $goods,
 					'pays' => array(
 						array(
-							'type' => intval($this->get_payment_type()),
+							'type' => intval($payment_type),
 							'sum' => 'bbb' . number_format($payment_total, 2, '.', '') . 'bbb',
 							'change' => 'bbb' . number_format((0.00), 2, '.', '') . 'bbb',
 							'comment' => $comment,
