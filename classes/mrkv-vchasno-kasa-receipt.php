@@ -168,10 +168,11 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 
 		/**
 		 * Take the per-order lock, so two requests can not create a receipt for one order at once
+		 * @param string Lock prefix, the sale and the return receipt have their own
 		 * @return boolean True if the lock is ours
 		 * */
-		private function acquire_lock(){
-			$name = 'mrkv_kasa_lock_' . $this->order->get_id();
+		private function acquire_lock($prefix = 'mrkv_kasa_lock_'){
+			$name = $prefix . $this->order->get_id();
 
 			# add_option() fails when the row already exists
 			if(add_option($name, time(), '', 'no')){
@@ -192,9 +193,146 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 
 		/**
 		 * Release the per-order lock
+		 * @param string Lock prefix
 		 * */
-		private function release_lock(){
-			delete_option('mrkv_kasa_lock_' . $this->order->get_id());
+		private function release_lock($prefix = 'mrkv_kasa_lock_'){
+			delete_option($prefix . $this->order->get_id());
+		}
+
+		/**
+		 * Check if the return receipt is already created
+		 * */
+		private function check_return_receipt_exist(){
+			$receipt_id  = $this->order->get_meta('mrkv_vchasno_kasa_return_receipt_id');
+			$receipt_url = $this->order->get_meta('mrkv_vchasno_kasa_return_receipt_url');
+
+			return ! empty($receipt_id) || ! empty($receipt_url);
+		}
+
+		/**
+		 * Log why the return receipt is not created (order note only for manual creation)
+		 * @param object Logger
+		 * @param string Message
+		 * */
+		private function report_return_skipped($log, $message){
+			$log->save_log($message);
+
+			if($this->type_creation == 'handle'){
+				$this->order->add_order_note($message, $is_customer_note = 0, $added_by_user = false);
+			}
+		}
+
+		/**
+		 * Create the return receipt (task 2) for a fully refunded order, the same rows and pays as the sale receipt
+		 * */
+		public function create_return_receipt(){
+			# Create log data object
+			$log = new MRKV_LOGGER_KASA();
+
+			# Automatic return receipt is off by default
+			if($this->type_creation != 'handle' && ! get_option('mrkv_kasa_return_receipt_auto')){
+				return;
+			}
+
+			# Nothing to return without the sale receipt
+			if(! $this->check_receipt_exist()){
+				$this->report_return_skipped($log, __('Чек повернення не створено: для замовлення немає чека продажу', 'mrkv-vchasno-kasa'));
+
+				return;
+			}
+
+			if($this->check_return_receipt_exist()){
+				$this->report_return_skipped($log, __('Чек повернення не створено: чек повернення вже було створено для данного замовлення', 'mrkv-vchasno-kasa'));
+
+				return;
+			}
+
+			# Only a full return, partial ones are not fiscalized by the plugin
+			if($this->type_creation == 'handle' && (float) $this->order->get_total_refunded() < (float) $this->order->get_total()){
+				$this->report_return_skipped($log, __('Чек повернення не створено: замовлення повернено не повністю', 'mrkv-vchasno-kasa'));
+
+				return;
+			}
+
+			# Another request is creating the return receipt for this order right now
+			if(! $this->acquire_lock('mrkv_kasa_return_lock_')){
+				$this->report_return_skipped($log, __('Чек повернення для цього замовлення вже створюється. Зачекайте кілька секунд і оновіть сторінку', 'mrkv-vchasno-kasa'));
+
+				return;
+			}
+
+			try{
+				# The receipt could be saved by the request that held the lock
+				$this->refresh_order();
+
+				if($this->check_return_receipt_exist()){
+					$this->report_return_skipped($log, __('Чек повернення не створено: чек повернення вже було створено для данного замовлення', 'mrkv-vchasno-kasa'));
+
+					return;
+				}
+
+				$this->create_return_receipt_locked($log);
+			}
+			finally{
+				$this->release_lock('mrkv_kasa_return_lock_');
+			}
+		}
+
+		/**
+		 * Create the return receipt, the caller holds the return lock
+		 * @param object Logger
+		 * */
+		private function create_return_receipt_locked($log){
+			$payment_type = $this->prepare_fiscalization($log);
+
+			if($payment_type === null){
+				return;
+			}
+
+			$request = $this->build_receipt_request(2, $payment_type);
+
+			$log->save_log('<pre>' . $request['json'] . '</pre>');
+
+			$response = $this->api_vchasno_kasa->connect($request['params'], self::ACTION_TYPE, $request['json']);
+
+			$log->save_log('<pre>' . $response . '</pre>');
+
+			$result = json_decode($response);
+
+			if(! is_object($result) || ! empty($result->errortxt) || empty($result->info->doccode)){
+				$log->save_log(__('Помилка при створенні чеку повернення: ', 'mrkv-vchasno-kasa'));
+				$log->save_log(is_object($result) && isset($result->errortxt) ? $result->errortxt : $response);
+
+				$this->order->add_order_note(__('Помилка при створенні чеку повернення. Докладніше у логах плагіну', 'mrkv-vchasno-kasa'), $is_customer_note = 0, $added_by_user = false);
+
+				return;
+			}
+
+			$receipt_url = $result->info->doccode;
+
+			$this->order->update_meta_data('mrkv_vchasno_kasa_return_receipt_id', $receipt_url);
+			$this->order->update_meta_data('mrkv_vchasno_kasa_return_receipt_url', 'https://kasa.vchasno.ua/check-viewer/' . $receipt_url);
+			$this->order->save();
+
+			$log->save_log(
+			    sprintf(
+			        /* translators: %d is the order ID */
+			        __('Чек повернення створено для замовлення %d', 'mrkv-vchasno-kasa'),
+			        $this->order->get_id()
+			    )
+			);
+
+			$this->order->add_order_note(
+			    sprintf(
+			        /* translators: %s is the URL to view the return receipt */
+			        __('Чек повернення створено <a href="%s" target="_blank">Відкрити</a>', 'mrkv-vchasno-kasa'),
+			        esc_url('https://kasa.vchasno.ua/check-viewer/' . $receipt_url)
+			    ),
+			    $is_customer_note = 0,
+			    $added_by_user = false
+			);
+
+			$this->send_receipt_to_user($receipt_url, $request['email'], $request['phone'], $log);
 		}
 
 		/**
@@ -368,6 +506,77 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 				return;
 			}
 
+			$payment_type = $this->prepare_fiscalization($log);
+
+			if($payment_type === null){
+				return;
+			}
+
+			$request = $this->build_receipt_request(1, $payment_type);
+			$params  = $request['params'];
+			$json    = $request['json'];
+
+			# Show Error
+			$log->save_log('<pre>' . $json . '</pre>');
+
+			# Create receipt (Send post query)
+			$response = $this->api_vchasno_kasa->connect($params, self::ACTION_TYPE, $json);
+
+			# Show Error
+			$log->save_log('<pre>' . $response . '</pre>');
+
+			# Decode json response to StdClass
+			$result = json_decode($response);
+
+			# Check if result has error
+			if($result->errortxt == ''){
+				# Save qr link
+				$receipt_url = $result->info->doccode;
+				$receipt_id = !empty($receipt_url_id) ? $receipt_url_id : $receipt_url;
+				$receipt_full_url = !empty($full_url) ? $full_url : 'https://kasa.vchasno.ua/check-viewer/' . $receipt_url;
+
+				$this->order->update_meta_data('vchasno_kasa_receipt_id', $receipt_id);
+				$this->order->update_meta_data('vchasno_kasa_receipt_url', $receipt_full_url);
+				$this->order->save();
+
+				# Add message in log 
+				$log->save_log(
+				    sprintf(
+				        /* translators: %d is the order ID */
+				        __('Чек створено для замовлення %d', 'mrkv-vchasno-kasa'),
+				        $this->order->get_id()
+				    )
+				);
+
+				# Show in history
+				$this->order->add_order_note(
+				    sprintf(
+				        /* translators: %s is the URL to view the receipt */
+				        __('Чек створено <a href="%s" target="_blank">Відкрити</a>', 'mrkv-vchasno-kasa'),
+				        esc_url('https://kasa.vchasno.ua/check-viewer/' . $receipt_url)
+				    ),
+				    $is_customer_note = 0,
+				    $added_by_user = false
+				);
+
+				$this->send_receipt_to_user($receipt_url, $request['email'], $request['phone'], $log);
+			}
+			else{
+				# Show Error
+				$log->save_log(__('Помилка при створенні чеку: ', 'mrkv-vchasno-kasa'));
+				$log->save_log($result->errortxt);
+
+				# Show in history
+				$this->order->add_order_note(__('Помилка при створенні чеку. Докладніше у логах плагіну', 'mrkv-vchasno-kasa'), $is_customer_note = 0, $added_by_user = false);
+			}
+		}
+
+		/**
+		 * Checks shared by the sale and the return receipt: payment type, open shift, token
+		 * @param object Logger
+		 * @return integer|null Payment type, null if the receipt can not be created (order note added)
+		 * */
+		private function prepare_fiscalization($log){
 			# Check payment type is configured
 			$payment_type = $this->get_payment_type();
 
@@ -381,7 +590,7 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 				$log->save_log($message);
 				$this->order->add_order_note($message, $is_customer_note = 0, $added_by_user = false);
 
-				return;
+				return null;
 			}
 
 			# Check shift status
@@ -405,9 +614,19 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 				$this->order->add_order_note(__('Помилка при створені чека: Порожній токен', 'mrkv-vchasno-kasa'), $is_customer_note = 0, $added_by_user = false);
 
 				# Stop create
-				return;
+				return null;
 			}
 
+			return $payment_type;
+		}
+
+		/**
+		 * Build the fiscal/execute body from the order, the same for the sale and the return receipt
+		 * @param integer Fiscal task: 1 sale, 2 return
+		 * @param integer Payment type
+		 * @return array params, json (sent as is), email and phone of the buyer
+		 * */
+		private function build_receipt_request($task, $payment_type){
 			# Create array with all params
 			$params = array();
 			# Get main order data
@@ -428,7 +647,8 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 				$pattern = "/^\+380\d{3}\d{2}\d{2}\d{2}$/";
 
 				if(!preg_match($pattern, $phone)){
-					$simple_phone_format = substr($phone, -9);
+					# Spaces, dashes and brackets would be cut into the number, keep only the digits
+					$simple_phone_format = substr(preg_replace('/\D/', '', $phone), -9);
 					$phone = '+380' . $simple_phone_format;
 				}
 
@@ -536,7 +756,7 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 
 			# Set fiscal params
 			$params['fiscal'] = array(
-				'task' => 1,
+				'task' => $task,
 				'receipt' => array(
 					'sum' => 'bbb' . number_format($total_price, 2, '.', '') . 'bbb',
 					'round' => 'bbb' . number_format((0.00), 2, '.', '') . 'bbb',
@@ -570,94 +790,57 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 			$json = str_replace('"bbb', '', $json);
 			$json = str_replace('bbb"', '', $json);
 
-			# Show Error
-			$log->save_log('<pre>' . $json . '</pre>');
+			return array('params' => $params, 'json' => $json, 'email' => $email, 'phone' => $phone);
+		}
 
-			# Create receipt (Send post query)
-			$response = $this->api_vchasno_kasa->connect($params, self::ACTION_TYPE, $json);
+		/**
+		 * Send the receipt to the buyer by the channels from the settings
+		 * @param string Receipt doccode
+		 * @param string Buyer email
+		 * @param string Buyer phone
+		 * @param object Logger
+		 * */
+		private function send_receipt_to_user($receipt_url, $email, $phone, $log){
+			# Check if send receipt enabled
+			if(get_option('mrkv_kasa_receipt_send_user')){
+				# Get sender type list (the checkbox above only turns sending on, the channels are a separate list)
+				$sender_type_list = get_option('mrkv_kasa_receipt_send_type');
 
-			# Show Error
-			$log->save_log('<pre>' . $response . '</pre>');
-
-			# Decode json response to StdClass
-			$result = json_decode($response);
-
-			# Check if result has error
-			if($result->errortxt == ''){
-				# Save qr link
-				$receipt_url = $result->info->doccode;
-				$receipt_id = !empty($receipt_url_id) ? $receipt_url_id : $receipt_url;
-				$receipt_full_url = !empty($full_url) ? $full_url : 'https://kasa.vchasno.ua/check-viewer/' . $receipt_url;
-
-				$this->order->update_meta_data('vchasno_kasa_receipt_id', $receipt_id);
-				$this->order->update_meta_data('vchasno_kasa_receipt_url', $receipt_full_url);
-				$this->order->save();
-
-				# Add message in log 
-				$log->save_log(
-				    sprintf(
-				        /* translators: %d is the order ID */
-				        __('Чек створено для замовлення %d', 'mrkv-vchasno-kasa'),
-				        $this->order->get_id()
-				    )
-				);
-
-				# Show in history
-				$this->order->add_order_note(
-				    sprintf(
-				        /* translators: %s is the URL to view the receipt */
-				        __('Чек створено <a href="%s" target="_blank">Відкрити</a>', 'mrkv-vchasno-kasa'),
-				        esc_url('https://kasa.vchasno.ua/check-viewer/' . $receipt_url)
-				    ),
-				    $is_customer_note = 0,
-				    $added_by_user = false
-				);
-
-				# Check if send receipt enabled
-				if(get_option('mrkv_kasa_receipt_send_user')){
-					# Get sender type list
-					$sender_type_list = get_option('mrkv_kasa_receipt_send_user');
-
-					# Check selected sender type
-					if(isset($sender_type_list) && $sender_type_list && is_array($sender_type_list)){
-						# Loop all channel
-						foreach($sender_type_list as $sender_type){
-							# Set receipnt
-							$recipient = $phone;
-							# Check sender type 
-							if($sender_type == 'email'){
-								$recipient = $email;
-							}
-
-							# Create sender params
-							$params_sender = array(
-								'recipient' => $recipient,
-								'channel' => $sender_type,
-								'check' => $receipt_url
-							);
-
-							# Create json
-							$json_sender = json_encode($params_sender);
-
-							# Show Error
-							$log->save_log('<pre>' . $json_sender . '</pre>');
-
-							# Create receipt (Send post query)
-							$response_sender = $this->api_vchasno_kasa->send_receipt($params_sender, self::ACTION_TYPE_CHECK, $json_sender);
-
-							# Show Error
-							$log->save_log('<pre>' . $response_sender . '</pre>');
+				# Check selected sender type
+				if(isset($sender_type_list) && $sender_type_list && is_array($sender_type_list)){
+					# Loop all channel
+					foreach($sender_type_list as $sender_type){
+						# Set receipnt
+						$recipient = $phone;
+						# Check sender type 
+						if($sender_type == 'email'){
+							$recipient = $email;
 						}
+
+						if(empty($recipient)){
+							continue;
+						}
+
+						# Create sender params
+						$params_sender = array(
+							'recipient' => $recipient,
+							'channel' => $sender_type,
+							'check' => $receipt_url
+						);
+
+						# Create json
+						$json_sender = json_encode($params_sender);
+
+						# Show Error
+						$log->save_log('<pre>' . $json_sender . '</pre>');
+
+						# Create receipt (Send post query)
+						$response_sender = $this->api_vchasno_kasa->send_receipt($params_sender, self::ACTION_TYPE_CHECK, $json_sender);
+
+						# Show Error
+						$log->save_log('<pre>' . $response_sender . '</pre>');
 					}
 				}
-			}
-			else{
-				# Show Error
-				$log->save_log(__('Помилка при створенні чеку: ', 'mrkv-vchasno-kasa'));
-				$log->save_log($result->errortxt);
-
-				# Show in history
-				$this->order->add_order_note(__('Помилка при створенні чеку. Докладніше у логах плагіну', 'mrkv-vchasno-kasa'), $is_customer_note = 0, $added_by_user = false);
 			}
 		}
 	}

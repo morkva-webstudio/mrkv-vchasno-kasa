@@ -75,6 +75,9 @@ $mrkv_kasa_shipping_price = (get_option('mrkv_kasa_shipping_price') == '') ? fal
 # Zero price product skip enabled
 $mrkv_kasa_skip_zero_product = (get_option('mrkv_kasa_skip_zero_product') == '') ? false : get_option('mrkv_kasa_skip_zero_product');
 
+# Return receipt on a full refund enabled
+$mrkv_kasa_return_receipt_auto = (get_option('mrkv_kasa_return_receipt_auto') == '') ? false : get_option('mrkv_kasa_return_receipt_auto');
+
 # Log file open
 $debug_log = file_get_contents(__DIR__ . '/../logs/debug.log');
 ?>
@@ -156,10 +159,10 @@ $debug_log = file_get_contents(__DIR__ . '/../logs/debug.log');
 								$enabled_gateways = array_filter(WC()->payment_gateways->payment_gateways(), function ($gateway) {
 	                                return 'yes' === $gateway->enabled;
 	                            });
-	                            $ppo_payment_type          = get_option('mrkv_kasa_code_type_payment');
-	                            $ppo_payment_type_custom          = get_option('mrkv_kasa_code_type_payment_custom');
-                            	$ppo_skip_receipt_creation = get_option('mrkv_kasa_receipt_creation');
-                            	$mrkv_kasa_payment_order_statuses = get_option('mrkv_kasa_payment_order_statuses');
+	                            $ppo_payment_type          = get_option('mrkv_kasa_code_type_payment', []);
+	                            $ppo_payment_type_custom = get_option('mrkv_kasa_code_type_payment_custom', []);
+                            	$ppo_skip_receipt_creation = get_option('mrkv_kasa_receipt_creation', []);
+                            	$mrkv_kasa_payment_order_statuses = get_option('mrkv_kasa_payment_order_statuses', []);
                             	$all_order_statuses = wc_get_order_statuses();
 
 								foreach($enabled_gateways as $id => $gateway){
@@ -349,6 +352,11 @@ $debug_log = file_get_contents(__DIR__ . '/../logs/debug.log');
 					<div class="line-form">
 						<p class="line-form__title"><?php esc_html_e('Пропускати товари з нульовою ціною', 'mrkv-vchasno-kasa'); ?></p>
 						<input class="table_input" type="checkbox" name="mrkv_kasa_skip_zero_product" <?php echo ($mrkv_kasa_skip_zero_product) ? esc_html('checked') : ''; ?> />
+					</div>
+					<div class="line-form">
+						<p class="line-form__title"><?php esc_html_e('Увімкнути автоматичне створення чеку повернення, коли замовлення стане refund (повернене)', 'mrkv-vchasno-kasa'); ?></p>
+						<input class="table_input" type="checkbox" name="mrkv_kasa_return_receipt_auto" <?php echo ($mrkv_kasa_return_receipt_auto) ? esc_html('checked') : ''; ?> />
+						<p><i><?php esc_html_e('Чек створиться, лише якщо замовлення вже має чек продажу. Часткові повернення не підтримуються.', 'mrkv-vchasno-kasa'); ?></i></p>
 					</div>
 					<?php echo submit_button(esc_html(__('Зберегти', 'mrkv-vchasno-kasa'))); ?>
 				</div>

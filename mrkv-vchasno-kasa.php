@@ -3,7 +3,7 @@
  * Plugin Name: MORKVA Vchasno Kasa Integration
  * Plugin URI: https://kasa.vchasno.com.ua/
  * Description: Інтеграція WooCommerce з пРРО Вчасно.Каса
- * Version: 1.1.7
+ * Version: 1.2.0
  * Tested up to: 7.1
  * Requires at least: 5.2
  * Requires PHP: 7.1
@@ -21,10 +21,6 @@
  * 1. Activation code (Check first register)
  * 2. Setup all part of plugin
  * */
-
-// -----------------------------------------------------------------------//
-// -------------------------------1.ACTIVATION----------------------------//
-// -----------------------------------------------------------------------//
 
 # This prevents a public user from directly accessing your .php files
 if (! defined('ABSPATH')) {
@@ -85,9 +81,6 @@ new MRKV_ACTIVATION(__FILE__);
 
 # Setup all before woo init
 add_action( 'before_woocommerce_init', function() {
-    // -----------------------------------------------------------------------//
-    // -------------------------------2.SETUP---------------------------------//
-    // -----------------------------------------------------------------------//
 
     # Include all needed classes for setup
     require_once 'classes/mrkv-setup.php'; 

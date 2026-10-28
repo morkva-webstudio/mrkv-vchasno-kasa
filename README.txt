@@ -4,7 +4,7 @@ Tags: WooCommerce, Vchasno Kasa, пРРО, Вчасно, Каса
 Requires at least: 5.2
 Tested up to: 7.1
 Requires PHP: 7.1
-Stable tag: 1.1.7
+Stable tag: 1.2.0
 License: GPLv2
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 WooCommerce tested up to: 9.4.0
@@ -61,6 +61,10 @@ WooCommerce tested up to: 9.4.0
 7. Так виглядає створений чек
 
 == Що нового? ==
+
+= 1.2.0 =
+* [new] додали створення чеку повного повернення замовлення (опція в налаштуваннях, вимкнена за замовчуванням)
+* [new] додали ручне створення чека повернення з дій замовлення
 
 = 1.1.7 =
 * [new] встановили тип оплати «готівка» для невідомого методу

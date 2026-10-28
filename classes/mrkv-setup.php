@@ -30,9 +30,11 @@ if (!class_exists('MRKV_SETUP')){
 			add_action('admin_menu', array($this, 'mrkv_vchasno_kasa_register_plugin_page'));
 
 			# Add action to order details actions
-			add_action('woocommerce_order_actions', array($this, 'mrkv_vchasno_kasa_wc_add_order_meta_box_action'));
+			add_action('woocommerce_order_actions', array($this, 'mrkv_vchasno_kasa_wc_add_order_meta_box_action'), 10, 2);
 			# Create bill process
 			add_action('woocommerce_order_action_create_bill_vchasno_kasa_action', array($this, 'mrkv_vchasno_kasa_wc_process_order_meta_box_action'));
+			# Create return bill process
+			add_action('woocommerce_order_action_create_return_bill_vchasno_kasa_action', array($this, 'mrkv_vchasno_kasa_wc_process_return_order_action'));
 
 			# Check HPOS
 			if(class_exists( \Automattic\WooCommerce\Utilities\OrderUtil::class ) && OrderUtil::custom_orders_table_usage_is_enabled()){
@@ -63,6 +65,9 @@ if (!class_exists('MRKV_SETUP')){
 
 			# Add function autocreate order receipt
 			add_action('woocommerce_order_status_changed', array($this,'mrkv_vchasno_kasa_auto_create_receipt'), 99, 3);
+
+			# Add function autocreate return receipt (fires for every full refund, also when the status is set to refunded by hand)
+			add_action('woocommerce_order_fully_refunded', array($this,'mrkv_vchasno_kasa_auto_create_return_receipt'), 10, 2);
 
 			# Add metabox to order edit
 			add_action( 'add_meta_boxes', array($this, 'mrkv_vchasno_kasa_wc_add_metabox'));
@@ -130,6 +135,7 @@ if (!class_exists('MRKV_SETUP')){
 		        'mrkv_kasa_phone'                => array($this, 'sanitize_checkbox'),
 		        'mrkv_kasa_shipping_price'       => array($this, 'sanitize_checkbox'),
 		        'mrkv_kasa_skip_zero_product'    => array($this, 'sanitize_checkbox'),
+		        'mrkv_kasa_return_receipt_auto'  => array($this, 'sanitize_checkbox'),
 		        'mrkv_kasa_receipt_send_user'    => array($this, 'sanitize_checkbox'),
 		        'mrkv_kasa_receipt_send_type'    => array($this, 'sanitize_array_of_strings'),
 		    );
@@ -255,13 +261,39 @@ if (!class_exists('MRKV_SETUP')){
 		/**
 		 * Add action to woo order
 		 * @param array All actions for order
+		 * @param object Order (WC passes it since 8.x, older versions only have the global)
 		 * @return array All actions for order with new
 		 * */
-		public function mrkv_vchasno_kasa_wc_add_order_meta_box_action($actions){
+		public function mrkv_vchasno_kasa_wc_add_order_meta_box_action($actions, $order = null){
 			# Add action
 			$actions['create_bill_vchasno_kasa_action'] = __('Створити чек Вчасно Каса', 'mrkv-vchasno-kasa');
+
+			if(! $order && isset($GLOBALS['theorder'])){
+				$order = $GLOBALS['theorder'];
+			}
+
+			# Return receipt only for an order with the sale receipt and without the return one
+			if($order && is_a($order, 'WC_Order') && $order->get_meta('vchasno_kasa_receipt_id') && ! $order->get_meta('mrkv_vchasno_kasa_return_receipt_id')){
+				$actions['create_return_bill_vchasno_kasa_action'] = __('Створити чек повернення Вчасно Каса', 'mrkv-vchasno-kasa');
+			}
+
 			# Return all list
         	return $actions;
+		}
+
+		/**
+		 * Create return bill process function
+		 * @param object Order data
+		 * */
+		public function mrkv_vchasno_kasa_wc_process_return_order_action($order){
+			# Include Create receipt class
+			include plugin_dir_path($this->file_path) . "classes/mrkv-vchasno-kasa-receipt.php";
+
+			# Creator recaipt
+			$creator = new MRKV_VCHASNO_KASA_RECEIPT($order, 'handle');
+
+			# Create Return Receipt
+			$creator->create_return_receipt();
 		}
 
 		/**
@@ -440,6 +472,42 @@ if (!class_exists('MRKV_SETUP')){
 
 			# Create Receipt
 			$creator->create_receipt();
+
+			if ( 'refunded' === $new_status || 'wc-refunded' === $new_status ) {
+				if ( get_option('mrkv_kasa_return_receipt_auto') ) {
+					$creator = new MRKV_VCHASNO_KASA_RECEIPT($order, $type_creation);
+					$creator->create_return_receipt();
+				}
+			}
+	    }
+
+	    /**
+	     * Automatic return receipt creation on a full refund
+	     *
+	     * @param integer $order_id Order ID
+	     * @param integer $refund_id Refund ID
+	     */
+	    public function mrkv_vchasno_kasa_auto_create_return_receipt($order_id, $refund_id = 0){
+	    	# Off by default, do not even load the shift status
+	    	if(! get_option('mrkv_kasa_return_receipt_auto')){
+	    		return;
+	    	}
+
+	    	# Include Create receipt class
+			include plugin_dir_path($this->file_path) . "classes/mrkv-vchasno-kasa-receipt.php";
+
+			# Get order data
+			$order = wc_get_order( $order_id );
+
+			if ( ! $order ) {
+				return;
+			}
+
+			# Creator recaipt
+			$creator = new MRKV_VCHASNO_KASA_RECEIPT($order, 'auto');
+
+			# Create Return Receipt
+			$creator->create_return_receipt();
 	    }
 
 	    /**
@@ -492,6 +560,19 @@ if (!class_exists('MRKV_SETUP')){
 	            	    esc_url($receipt_url),
 	            	    esc_html($receipt_id)
 	            	);
+
+	            	$return_receipt_id  = $order ? $order->get_meta('mrkv_vchasno_kasa_return_receipt_id') : '';
+	            	$return_receipt_url = $order ? $order->get_meta('mrkv_vchasno_kasa_return_receipt_url') : '';
+
+	            	if($return_receipt_id)
+	            	{
+	            		printf(
+	            		    '<br>%s <a href="%s" target="_blank">%s</a>',
+	            		    esc_html__('Чек повернення:', 'mrkv-vchasno-kasa'),
+	            		    esc_url($return_receipt_url),
+	            		    esc_html($return_receipt_id)
+	            		);
+	            	}
 	            }
 	            else
 	            {

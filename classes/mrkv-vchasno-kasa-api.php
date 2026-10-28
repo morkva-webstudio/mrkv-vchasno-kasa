@@ -25,21 +25,6 @@ if (!class_exists('MRKV_VCHASNO_KASA_API')){
 		const POST_URL = 'https://kasa.vchasno.ua/api/v3/';
 
 		/**
-		 * @var string Url to vchasno kasa post V2
-		 * */
-		const POST_URL_V = 'https://kasa.vchasno.ua/api/v2/';
-
-		/**
-		 * @var string Version connect api
-		 * */
-		const VERSION_API = '6';
-
-		/**
-		 * @var string Task label to identify the answer
-		 * */
-		const TAG_API = '';
-
-		/**
 		 * Constructor for connect with Vchasno Kasa
 		 * @var string Token number
 		 * */
@@ -91,7 +76,7 @@ if (!class_exists('MRKV_VCHASNO_KASA_API')){
 			# Encode query
 			$params_put = ($json) ? $json : json_encode($params);
 			# Get query url
-			$url = self::POST_URL_V . $action;
+			$url = self::POST_URL . $action;
 
 			# Set header query values
 			$header = array( 'Content-type' => 'application/json',
@@ -110,8 +95,8 @@ if (!class_exists('MRKV_VCHASNO_KASA_API')){
                 )
             );
 
-			# Return response
-			return  $response['body'];
+			# Return response, a failed request must not break the order that already has its receipt
+			return wp_remote_retrieve_body($response);
 		}
 	}
 }
