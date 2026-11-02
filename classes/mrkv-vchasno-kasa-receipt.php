@@ -247,6 +247,16 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 				return;
 			}
 
+			# Sale receipt created before its body was saved: rebuilding it from the order now can differ from the sale
+			if($this->get_sale_request_json() === '' && ! $this->allow_return_from_order()){
+				$message = __('Чек повернення не створено: чек продажу створено до оновлення плагіна, його вміст не збережено. Створіть чек повернення вручну в кабінеті Вчасно.Каса', 'mrkv-vchasno-kasa');
+
+				$log->save_log($message);
+				$this->order->add_order_note($message, $is_customer_note = 0, $added_by_user = false);
+
+				return;
+			}
+
 			# Only a full return, partial ones are not fiscalized by the plugin
 			if($this->type_creation == 'handle' && (float) $this->order->get_total_refunded() < (float) $this->order->get_total()){
 				$this->report_return_skipped($log, __('Чек повернення не створено: замовлення повернено не повністю', 'mrkv-vchasno-kasa'));
@@ -289,11 +299,24 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 				return;
 			}
 
+			# Buyer contacts for sending the receipt are taken from the order
 			$request = $this->build_receipt_request(2, $payment_type);
 
-			$log->save_log('<pre>' . $request['json'] . '</pre>');
+			# Rows, tax groups, sums, pays and cashier exactly as in the sale receipt
+			$json = $this->get_sale_request_json();
+			$params = json_decode($json, true);
 
-			$response = $this->api_vchasno_kasa->connect($request['params'], self::ACTION_TYPE, $request['json']);
+			# No saved sale body, the site allowed the return from the current order data
+			if($json === ''){
+				$json = $request['json'];
+				$params = $request['params'];
+
+				$this->order->add_order_note(__('Чек повернення зібрано з поточних даних замовлення, бо вміст чека продажу не збережено. Звірте його з чеком продажу', 'mrkv-vchasno-kasa'), $is_customer_note = 0, $added_by_user = false);
+			}
+
+			$log->save_log('<pre>' . $json . '</pre>');
+
+			$response = $this->api_vchasno_kasa->connect($params, self::ACTION_TYPE, $json);
 
 			$log->save_log('<pre>' . $response . '</pre>');
 
@@ -333,6 +356,33 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 			);
 
 			$this->send_receipt_to_user($receipt_url, $request['email'], $request['phone'], $log);
+		}
+
+		/**
+		 * Whether a return for a sale without the saved body may be built from the current order data
+		 * @return boolean
+		 * */
+		private function allow_return_from_order(){
+			/**
+			 * Return receipt for a sale receipt created before its body was saved: true builds it
+			 * from the order as it is now (tax groups, items, sums, payment type may differ from the sale)
+			 * @param boolean False by default, the return is not created
+			 * @param object Order
+			 * */
+			return (bool) apply_filters('mrkv_kasa_return_receipt_from_order', false, $this->order);
+		}
+
+		/**
+		 * Body of the sale receipt with the return task
+		 * @return string JSON as it was sent for the sale with task 2, empty if the sale body was not saved
+		 * */
+		private function get_sale_request_json(){
+			$json = (string) $this->order->get_meta('mrkv_vchasno_kasa_receipt_request');
+
+			# Numbers are sent unquoted, so replace the task in the string instead of decode/encode
+			$json = str_replace('"fiscal":{"task":1,', '"fiscal":{"task":2,', $json, $count);
+
+			return ($count === 1) ? $json : '';
 		}
 
 		/**
@@ -528,8 +578,8 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 			# Decode json response to StdClass
 			$result = json_decode($response);
 
-			# Check if result has error
-			if($result->errortxt == ''){
+			# Check if result has error, an empty or broken answer is an error too
+			if(is_object($result) && empty($result->errortxt) && ! empty($result->info->doccode)){
 				# Save qr link
 				$receipt_url = $result->info->doccode;
 				$receipt_id = !empty($receipt_url_id) ? $receipt_url_id : $receipt_url;
@@ -537,6 +587,8 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 
 				$this->order->update_meta_data('vchasno_kasa_receipt_id', $receipt_id);
 				$this->order->update_meta_data('vchasno_kasa_receipt_url', $receipt_full_url);
+				# The return receipt repeats this body, not the order as it is at refund time
+				$this->order->update_meta_data('mrkv_vchasno_kasa_receipt_request', $json);
 				$this->order->save();
 
 				# Add message in log 
@@ -564,7 +616,7 @@ if (!class_exists('MRKV_VCHASNO_KASA_RECEIPT')){
 			else{
 				# Show Error
 				$log->save_log(__('Помилка при створенні чеку: ', 'mrkv-vchasno-kasa'));
-				$log->save_log($result->errortxt);
+				$log->save_log(is_object($result) && isset($result->errortxt) ? $result->errortxt : $response);
 
 				# Show in history
 				$this->order->add_order_note(__('Помилка при створенні чеку. Докладніше у логах плагіну', 'mrkv-vchasno-kasa'), $is_customer_note = 0, $added_by_user = false);

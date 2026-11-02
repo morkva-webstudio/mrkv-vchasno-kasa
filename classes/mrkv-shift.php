@@ -64,7 +64,7 @@ if (!class_exists('MRKV_SHIFT')){
 			$result = json_decode($response);
 
 			# If response not exist error message
-			if($result->errortxt == ''){
+			if(is_object($result) && empty($result->errortxt)){
 				# Check exist option value
 				if($this->validation_shift($result->info->shift_status) != $this->current_status){
 					# Change exist option value
@@ -85,7 +85,7 @@ if (!class_exists('MRKV_SHIFT')){
 			else{
 				# Show Error
 				$log->save_log(__('Помилка при перевірці статуса зміни: ', 'mrkv-vchasno-kasa'));
-				$log->save_log($result->errortxt);
+				$log->save_log(is_object($result) && isset($result->errortxt) ? $result->errortxt : $response);
 			}
 			
 		}
@@ -112,7 +112,7 @@ if (!class_exists('MRKV_SHIFT')){
 			$result = json_decode($response);
 
 			# If response not exist error message
-			if($result->errortxt == ''){
+			if(is_object($result) && empty($result->errortxt)){
 				# Change exist option value
 				$this->current_status = '1';
 				update_option('mrkv_kasa_shift_status', $this->current_status);
@@ -143,7 +143,7 @@ if (!class_exists('MRKV_SHIFT')){
 			else{
 				# Show Error
 				$log->save_log(__('Зміну не вдалося відкрити. Помилка: ', 'mrkv-vchasno-kasa'));
-				$log->save_log($result->errortxt);
+				$log->save_log(is_object($result) && isset($result->errortxt) ? $result->errortxt : $response);
 			}
 		}
 
@@ -169,7 +169,7 @@ if (!class_exists('MRKV_SHIFT')){
 			$result = json_decode($response);
 
 			# If response not exist error message
-			if($result->errortxt == ''){
+			if(is_object($result) && empty($result->errortxt)){
 				# Change exist option value
 				$this->current_status = '0';
 				update_option('mrkv_kasa_shift_status', $this->current_status);
@@ -201,7 +201,7 @@ if (!class_exists('MRKV_SHIFT')){
 			else{
 				# Show Error
 				$log->save_log(__('Зміну не вдалося закрити. Помилка: ', 'mrkv-vchasno-kasa'));
-				$log->save_log($result->errortxt);
+				$log->save_log(is_object($result) && isset($result->errortxt) ? $result->errortxt : $response);
 			}
 		}
 
