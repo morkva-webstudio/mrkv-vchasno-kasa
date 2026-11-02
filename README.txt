@@ -1,5 +1,5 @@
 === MORKVA Vchasno Kasa Integration ===
-Contributors: bandido, morkva, dpmine
+Contributors: bandido, dpmine
 Tags: WooCommerce, Vchasno Kasa, пРРО, Вчасно, Каса
 Requires at least: 5.2
 Tested up to: 7.1
