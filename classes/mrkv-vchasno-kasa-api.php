@@ -62,8 +62,13 @@ if (!class_exists('MRKV_VCHASNO_KASA_API')){
                 )
             );
 
+			# Timeout or connection error: answer like the API does, so callers log it as an error
+			if(is_wp_error($response)){
+				return json_encode(array('errortxt' => $response->get_error_message() ? $response->get_error_message() : $response->get_error_code()));
+			}
+
 			# Return response
-			return  $response['body'];
+			return wp_remote_retrieve_body($response);
 		}
 
 		/**
