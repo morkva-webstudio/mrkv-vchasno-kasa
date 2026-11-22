@@ -11,7 +11,7 @@
  * Author URI: https://morkva.co.ua
  * Text Domain: mrkv-vchasno-kasa
  * WC requires at least: 5.4.0
- * WC tested up to: 9.6.0
+ * WC tested up to: 11.3
  * Domain Path: /i18n/
  * License: GPLv2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
